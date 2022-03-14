@@ -19,83 +19,41 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <signal.h>
-#include <unistd.h>
-#include <gtk/gtk.h>
-#include <X11/Xlib.h>
-#include <X11/Xutil.h>
+#include <ctype.h>
+#include <assert.h>
+#include <GL/glut.h>
 #include <spnav.h>
 #include "ui.h"
 
-#define CHK_AXINV_TRANS_X			"axinv_trans_x"
-#define CHK_AXINV_TRANS_Y			"axinv_trans_y"
-#define CHK_AXINV_TRANS_Z			"axinv_trans_z"
+#define VIRT_HEIGHT	600
+static int virt_width;
 
-#define CHK_AXINV_ROT_X				"axinv_rot_x"
-#define CHK_AXINV_ROT_Y				"axinv_rot_y"
-#define CHK_AXINV_ROT_Z				"axinv_rot_z"
+#define PX_TO_VX(x)		((x) * virt_width / win_width)
+#define PY_TO_VY(y)		((y) * VIRT_HEIGHT / win_height)
 
-#define CHK_SWAP_YZ					"swap_yz"
+static int init(void);
+static void cleanup(void);
+static void display(void);
+static void draw_nk(void);
+static float text_width(nk_handle nk, float h, const char *str, int len);
+static void reshape(int x, int y);
+static void keypress(unsigned char key, int x, int y);
+static void keyrelease(unsigned char key, int x, int y);
+static void skeypress(int key, int x, int y);
+static void skeyrelease(int key, int x, int y);
+static void mouse(int bn, int st, int x, int y);
+static void motion(int x, int y);
 
-#define CHK_ENABLE_LED				"enable_led"
-#define CHK_GRAB_DEVICE				"grab_device"
+static void errorbox(const char *msg);
 
-#define SLIDER_SENS_GLOBAL			"sens_global"
-
-#define SLIDER_SENS_TRANS			"sens_trans"
-#define SLIDER_SENS_TRANS_X			"sens_trans_x"
-#define SLIDER_SENS_TRANS_Y			"sens_trans_y"
-#define SLIDER_SENS_TRANS_Z			"sens_trans_z"
-
-#define SLIDER_SENS_ROT				"sens_rot"
-#define SLIDER_SENS_ROT_X			"sens_rot_x"
-#define SLIDER_SENS_ROT_Y			"sens_rot_y"
-#define SLIDER_SENS_ROT_Z			"sens_rot_z"
-
-#define SLIDER_DEADZONE				"deadzone"
-#define SLIDER_DEADZONE_TRANS_X		"deadzone_trans_x"
-#define SLIDER_DEADZONE_TRANS_Y		"deadzone_trans_y"
-#define SLIDER_DEADZONE_TRANS_Z		"deadzone_trans_z"
-#define SLIDER_DEADZONE_ROT_X		"deadzone_rot_x"
-#define SLIDER_DEADZONE_ROT_Y		"deadzone_rot_y"
-#define SLIDER_DEADZONE_ROT_Z		"deadzone_rot_z"
-
-#define BTN_PING					"ping_daemon"
-
-
-static void create_ui(void);
-
-G_MODULE_EXPORT void chk_handler(GtkToggleButton *bn, gpointer data);
-G_MODULE_EXPORT void slider_handler(GtkRange *rng, gpointer data);
-G_MODULE_EXPORT void bn_handler(GtkButton *bn, gpointer data);
-
-struct widgets {
-
-	GtkWidget *win;
-	GObject *slider_sens_trans_x;
-	GObject *slider_sens_trans_y;
-	GObject *slider_sens_trans_z;
-	GObject *slider_sens_rot_x;
-	GObject *slider_sens_rot_y;
-	GObject *slider_sens_rot_z;
-	GObject *slider_deadzone_trans_x;
-	GObject *slider_deadzone_trans_y;
-	GObject *slider_deadzone_trans_z;
-	GObject *slider_deadzone_rot_x;
-	GObject *slider_deadzone_rot_y;
-	GObject *slider_deadzone_rot_z;
-
-};
-
-static struct widgets widgets;
+static int win_width, win_height;
+static unsigned int modkeys;
+static struct nk_context nk;
+static struct nk_user_font font;
 
 static int fd;
 
-
-enum {TX, TY, TZ, RX, RY, RZ};
 #define MAX_BUTTONS		64
-
-static int def_axinv = 0x36;	/* invert TY, TZ, RY, RZ */
 
 static float sensitivity;
 static float sens_axis[6];
@@ -103,36 +61,60 @@ static int invert;
 static int map_axis[6];
 static int map_bn[MAX_BUTTONS];
 static int dead_thres[6];
-static int grab_device;
 static int led, grab;
-static int repeat_msec;
+/*static int repeat_msec;*/
 
-static void errorbox(const char *msg)
-{
-	GtkWidget *dlg;
-	dlg = gtk_message_dialog_new(0, GTK_DIALOG_MODAL, GTK_MESSAGE_ERROR, GTK_BUTTONS_CLOSE, msg);
-	gtk_dialog_run((GtkDialog*)dlg);
-	gtk_widget_destroy(dlg);
-}
 
 int main(int argc, char **argv)
 {
+	glutInit(&argc, argv);
+	glutInitWindowSize(800, 600);
+	glutInitDisplayMode(GLUT_RGB | GLUT_DOUBLE);
+	glutCreateWindow("spacenav configuration");
+
+	glutDisplayFunc(display);
+	glutReshapeFunc(reshape);
+	glutKeyboardFunc(keypress);
+	glutKeyboardUpFunc(keyrelease);
+	glutSpecialFunc(skeypress);
+	glutSpecialUpFunc(skeyrelease);
+	glutMouseFunc(mouse);
+	glutMotionFunc(motion);
+	glutPassiveMotionFunc(motion);
+
+	if(init() == -1) {
+		return 1;
+	}
+	atexit(cleanup);
+
+	nk_input_begin(&nk);
+	glutMainLoop();
+	return 0;
+}
+
+int init(void)
+{
 	int i;
 
-	gtk_init(&argc, &argv);
+	glEnable(GL_CULL_FACE);
+
+	font.height = 16;
+	font.width = text_width;
+
+	nk_init_default(&nk, &font);
+	nk_style_set_font(&nk, &font);
 
 	if((fd = spnav_open()) == -1) {
 		errorbox("Failed to connect to spacenavd!");
-		return 1;
+		return -1;
 	}
 	if(spnav_protocol() < 1) {
 		errorbox("Currently running version of spacenavd is too old for this version of the configuration tool.\n"
 				"\nEither update to a recent version of spacenavd (v0.9 or later), or downgrade to spnavcfg v0.3.1.");
-		return 1;
+		return -1;
 	}
 	spnav_client_name("spnavcfg");
 
-	/* TODO make these into a nice information panel */
 	printf("Device: %s\n", spnav_dev_name(0, 0));
 	printf("Path: %s\n", spnav_dev_path(0, 0));
 	printf("Buttons: %d\n", spnav_dev_buttons());
@@ -151,267 +133,271 @@ int main(int argc, char **argv)
 	for(i=0; i<MAX_BUTTONS; i++) {
 		map_bn[i] = spnav_cfg_get_bnmap(i);
 	}
-
-	create_ui();
-
-	gtk_widget_show_all(widgets.win);
-
-	gtk_main();
+	return 0;
 }
 
-static int query_x11(void)
+static void cleanup(void)
 {
-	Display *dpy;
-	Window win, root_win;
-	XTextProperty wname;
-	Atom type, command_event;
-	int fmt;
-	unsigned long nitems, bytes_after;
-	unsigned char *prop;
-
-	if(!(dpy = XOpenDisplay(0))) {
-		return 0;
-	}
-	root_win = DefaultRootWindow(dpy);
-
-	if((command_event = XInternAtom(dpy, "CommandEvent", True)) == None) {
-		XCloseDisplay(dpy);
-		return 0;
-	}
-
-	XGetWindowProperty(dpy, root_win, command_event, 0, 1, False, AnyPropertyType,
-			&type, &fmt, &nitems, &bytes_after, &prop);
-	if(!prop) {
-		XCloseDisplay(dpy);
-		return 0;
-	}
-
-	win = *(Window*)prop;
-	XFree(prop);
-
-	if(!XGetWMName(dpy, win, &wname) || strcmp("Magellan Window", (char*)wname.value) != 0) {
-		XCloseDisplay(dpy);
-		return 0;
-	}
-	XCloseDisplay(dpy);
-
-	/* found a magellan window, still it might belong to the 3dxsrv driver */
-	/* XXX ping daemon */
-	return 1;
+	spnav_close();
 }
 
-static void create_ui(void)
+static void display(void)
 {
-	GObject *obj;
-	GtkBuilder *gtk_builder;
+	static int foo1, foo2;
 
-	gtk_builder = gtk_builder_new();
-	gtk_builder_add_from_string(gtk_builder, (gchar*)ui_xml, -1, NULL);
+	nk_input_end(&nk);
 
-	widgets.win = GTK_WIDGET(gtk_builder_get_object(gtk_builder, "main"));
+	glClear(GL_COLOR_BUFFER_BIT);
 
-	obj = gtk_builder_get_object(gtk_builder, CHK_AXINV_TRANS_X);
-	gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(obj), (invert ^ def_axinv) & 1);
-	obj = gtk_builder_get_object(gtk_builder, CHK_AXINV_TRANS_Y);
-	gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(obj), (invert ^ def_axinv) & 2);
-	obj = gtk_builder_get_object(gtk_builder, CHK_AXINV_TRANS_Z);
-	gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(obj), (invert ^ def_axinv) & 4);
-	obj = gtk_builder_get_object(gtk_builder, CHK_AXINV_ROT_X);
-	gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(obj), (invert ^ def_axinv) & 8);
-	obj = gtk_builder_get_object(gtk_builder, CHK_AXINV_ROT_Y);
-	gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(obj), (invert ^ def_axinv) & 0x10);
-	obj = gtk_builder_get_object(gtk_builder, CHK_AXINV_ROT_Z);
-	gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(obj), (invert ^ def_axinv) & 0x20);
+	nk_begin(&nk, "foo", nk_rect(20, 20, 200, 200), NK_WINDOW_BORDER);
+	nk_layout_row_dynamic(&nk, 30, 2);
+	if(nk_button_label(&nk, "red")) glClearColor(1, 0, 0, 1);
+	if(nk_button_label(&nk, "black")) glClearColor(0, 0, 0, 1);
+	nk_layout_row_dynamic(&nk, 30, 2);
+	if(nk_option_label(&nk, "foo1", foo1)) foo1 = 1;
+	if(nk_option_label(&nk, "foo2", foo2)) foo2 = 1;
+	nk_end(&nk);
 
-	obj = gtk_builder_get_object(gtk_builder, CHK_SWAP_YZ);
-	gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(obj), map_axis[1] == 1);
+	draw_nk();
 
-	obj = gtk_builder_get_object(gtk_builder, SLIDER_SENS_GLOBAL);
-	gtk_range_set_value(GTK_RANGE(obj), sensitivity);
+	glutSwapBuffers();
+	assert(glGetError() == GL_NO_ERROR);
 
-	obj = gtk_builder_get_object(gtk_builder, SLIDER_SENS_TRANS);
-	gtk_range_set_value(GTK_RANGE(obj), sens_axis[0]);
-
-	widgets.slider_sens_trans_x = gtk_builder_get_object(gtk_builder, SLIDER_SENS_TRANS_X);
-	gtk_range_set_value(GTK_RANGE(widgets.slider_sens_trans_x), sens_axis[0]);
-	widgets.slider_sens_trans_y = gtk_builder_get_object(gtk_builder, SLIDER_SENS_TRANS_Y);
-	gtk_range_set_value(GTK_RANGE(widgets.slider_sens_trans_y), sens_axis[1]);
-	widgets.slider_sens_trans_z = gtk_builder_get_object(gtk_builder, SLIDER_SENS_TRANS_Z);
-	gtk_range_set_value(GTK_RANGE(widgets.slider_sens_trans_z), sens_axis[2]);
-
-	obj = gtk_builder_get_object(gtk_builder, SLIDER_SENS_ROT);
-	gtk_range_set_value(GTK_RANGE(obj), sens_axis[3]);
-
-	widgets.slider_sens_rot_x = gtk_builder_get_object(gtk_builder, SLIDER_SENS_ROT_X);
-	gtk_range_set_value(GTK_RANGE(widgets.slider_sens_rot_x), sens_axis[3]);
-	widgets.slider_sens_rot_y = gtk_builder_get_object(gtk_builder, SLIDER_SENS_ROT_Y);
-	gtk_range_set_value(GTK_RANGE(widgets.slider_sens_rot_y), sens_axis[4]);
-	widgets.slider_sens_rot_z = gtk_builder_get_object(gtk_builder, SLIDER_SENS_ROT_Z);
-	gtk_range_set_value(GTK_RANGE(widgets.slider_sens_rot_z), sens_axis[5]);
-
-	obj = gtk_builder_get_object(gtk_builder, SLIDER_DEADZONE);
-	gtk_range_set_value(GTK_RANGE(obj), dead_thres[TX]);
-
-	widgets.slider_deadzone_trans_x = gtk_builder_get_object(gtk_builder, SLIDER_DEADZONE_TRANS_X);
-	gtk_range_set_value(GTK_RANGE(widgets.slider_deadzone_trans_x), dead_thres[TX]);
-	widgets.slider_deadzone_trans_y = gtk_builder_get_object(gtk_builder, SLIDER_DEADZONE_TRANS_Y);
-	gtk_range_set_value(GTK_RANGE(widgets.slider_deadzone_trans_y), dead_thres[TY]);
-	widgets.slider_deadzone_trans_z = gtk_builder_get_object(gtk_builder, SLIDER_DEADZONE_TRANS_Z);
-	gtk_range_set_value(GTK_RANGE(widgets.slider_deadzone_trans_z), dead_thres[TZ]);
-	widgets.slider_deadzone_rot_x = gtk_builder_get_object(gtk_builder, SLIDER_DEADZONE_ROT_X);
-	gtk_range_set_value(GTK_RANGE(widgets.slider_deadzone_rot_x), dead_thres[RX]);
-	widgets.slider_deadzone_rot_y = gtk_builder_get_object(gtk_builder, SLIDER_DEADZONE_ROT_Y);
-	gtk_range_set_value(GTK_RANGE(widgets.slider_deadzone_rot_y), dead_thres[RY]);
-	widgets.slider_deadzone_rot_z = gtk_builder_get_object(gtk_builder, SLIDER_DEADZONE_ROT_Z);
-	gtk_range_set_value(GTK_RANGE(widgets.slider_deadzone_rot_z), dead_thres[RZ]);
-
-	obj = gtk_builder_get_object(gtk_builder, CHK_GRAB_DEVICE);
-	gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(obj), grab_device);
-
-	obj = gtk_builder_get_object(gtk_builder, CHK_ENABLE_LED);
-	gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(obj), led);
-
-	gtk_builder_connect_signals(gtk_builder, NULL);
-
-	g_object_unref(G_OBJECT(gtk_builder));
-
+	nk_input_begin(&nk);
 }
 
-G_MODULE_EXPORT void chk_handler(GtkToggleButton *bn, gpointer data)
+static void draw_nk(void)
 {
-	int tmp;
-	int state = gtk_toggle_button_get_active(bn);
-	const gchar* ctrlname = gtk_buildable_get_name(GTK_BUILDABLE(bn));
+	const struct nk_command *cmd = 0;
 
-	if(strcmp(ctrlname, CHK_AXINV_TRANS_X) == 0) {
-		invert ^= 1;
-		spnav_cfg_set_invert(invert);
-	} else if(strcmp(ctrlname, CHK_AXINV_TRANS_Y) == 0) {
-		invert ^= 2;
-		spnav_cfg_set_invert(invert);
-	} else if(strcmp(ctrlname, CHK_AXINV_TRANS_Z) == 0) {
-		invert ^= 4;
-		spnav_cfg_set_invert(invert);
-	} else if(strcmp(ctrlname, CHK_AXINV_ROT_X) == 0) {
-		invert ^= 8;
-		spnav_cfg_set_invert(invert);
-	} else if(strcmp(ctrlname, CHK_AXINV_ROT_Y) == 0) {
-		invert ^= 0x10;
-		spnav_cfg_set_invert(invert);
-	} else if(strcmp(ctrlname, CHK_AXINV_ROT_Z) == 0) {
-		invert ^= 0x20;
-		spnav_cfg_set_invert(invert);
-	} else if(strcmp(ctrlname, CHK_GRAB_DEVICE) == 0) {
-		spnav_cfg_set_grab(state);
-	} else if(strcmp(ctrlname, CHK_ENABLE_LED) == 0) {
-		printf("LED: %d\n", state);
-		spnav_cfg_set_led(state);
-	} else if(strcmp(ctrlname, CHK_SWAP_YZ) == 0) {
-		tmp = map_axis[TY];
-		map_axis[TY] = map_axis[TZ];
-		map_axis[TZ] = tmp;
-		tmp = map_axis[RY];
-		map_axis[RY] = map_axis[RZ];
-		map_axis[RZ] = tmp;
-		spnav_cfg_set_axismap(TY, map_axis[TY]);
-		spnav_cfg_set_axismap(TZ, map_axis[TZ]);
-		spnav_cfg_set_axismap(RY, map_axis[RY]);
-		spnav_cfg_set_axismap(RZ, map_axis[RZ]);
-	}
+	glPushAttrib(GL_ENABLE_BIT | GL_LINE_BIT);
+	glEnable(GL_SCISSOR_TEST);
+	glEnable(GL_BLEND);
+	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-}
-
-G_MODULE_EXPORT void slider_handler(GtkRange *rng, gpointer data)
-{
-	int i;
-	const gchar* ctrlname = gtk_buildable_get_name(GTK_BUILDABLE(rng));
-	gdouble value = gtk_range_get_value(rng);
-
-	if(strcmp(ctrlname, SLIDER_SENS_GLOBAL) == 0) {
-		sensitivity = value;
-		spnav_cfg_set_sens(value);
-	} else if(strcmp(ctrlname, SLIDER_SENS_TRANS) == 0) {
-		sens_axis[TX] = sens_axis[TY] = sens_axis[TZ] = value;
-		spnav_cfg_set_axis_sens(sens_axis);
-		gtk_range_set_value(GTK_RANGE(widgets.slider_sens_trans_x), value);
-		gtk_range_set_value(GTK_RANGE(widgets.slider_sens_trans_y), value);
-		gtk_range_set_value(GTK_RANGE(widgets.slider_sens_trans_z), value);
-	} else if(strcmp(ctrlname, SLIDER_SENS_TRANS_X) == 0) {
-		sens_axis[TX] = value;
-		spnav_cfg_set_axis_sens(sens_axis);
-	} else if(strcmp(ctrlname, SLIDER_SENS_TRANS_Y) == 0) {
-		sens_axis[TY] = value;
-		spnav_cfg_set_axis_sens(sens_axis);
-	} else if(strcmp(ctrlname, SLIDER_SENS_TRANS_Z) == 0) {
-		sens_axis[TZ] = value;
-		spnav_cfg_set_axis_sens(sens_axis);
-	} else if(strcmp(ctrlname, SLIDER_SENS_ROT) == 0) {
-		sens_axis[RX] = sens_axis[RY] = sens_axis[RZ] = value;
-		spnav_cfg_set_axis_sens(sens_axis);
-		gtk_range_set_value(GTK_RANGE(widgets.slider_sens_rot_x), value);
-		gtk_range_set_value(GTK_RANGE(widgets.slider_sens_rot_y), value);
-		gtk_range_set_value(GTK_RANGE(widgets.slider_sens_rot_z), value);
-	} else if(strcmp(ctrlname, SLIDER_SENS_ROT_X) == 0) {
-		sens_axis[RX] = value;
-		spnav_cfg_set_axis_sens(sens_axis);
-	} else if(strcmp(ctrlname, SLIDER_SENS_ROT_Y) == 0) {
-		sens_axis[RY] = value;
-		spnav_cfg_set_axis_sens(sens_axis);
-	} else if(strcmp(ctrlname, SLIDER_SENS_ROT_Z) == 0) {
-		sens_axis[RZ] = value;
-		spnav_cfg_set_axis_sens(sens_axis);
-	} else if(strcmp(ctrlname, SLIDER_DEADZONE) == 0) {
-		for(i=0; i<6; i++) {
-			dead_thres[i] = value;
-			spnav_cfg_set_deadzone(i, value);
-		}
-		gtk_range_set_value(GTK_RANGE(widgets.slider_deadzone_trans_x), value);
-		gtk_range_set_value(GTK_RANGE(widgets.slider_deadzone_trans_y), value);
-		gtk_range_set_value(GTK_RANGE(widgets.slider_deadzone_trans_z), value);
-		gtk_range_set_value(GTK_RANGE(widgets.slider_deadzone_rot_x), value);
-		gtk_range_set_value(GTK_RANGE(widgets.slider_deadzone_rot_y), value);
-		gtk_range_set_value(GTK_RANGE(widgets.slider_deadzone_rot_z), value);
-	} else if(strcmp(ctrlname, SLIDER_DEADZONE_TRANS_X) == 0) {
-		dead_thres[TX] = value;
-		spnav_cfg_set_deadzone(TX, value);
-	} else if(strcmp(ctrlname, SLIDER_DEADZONE_TRANS_Y) == 0) {
-		dead_thres[TY] = value;
-		spnav_cfg_set_deadzone(TY, value);
-	} else if(strcmp(ctrlname, SLIDER_DEADZONE_TRANS_Z) == 0) {
-		dead_thres[TZ] = value;
-		spnav_cfg_set_deadzone(TZ, value);
-	} else if(strcmp(ctrlname, SLIDER_DEADZONE_ROT_X) == 0) {
-		dead_thres[RX] = value;
-		spnav_cfg_set_deadzone(RX, value);
-	} else if(strcmp(ctrlname, SLIDER_DEADZONE_ROT_Y) == 0) {
-		dead_thres[RY] = value;
-		spnav_cfg_set_deadzone(RY, value);
-	} else if(strcmp(ctrlname, SLIDER_DEADZONE_ROT_Z) == 0) {
-		dead_thres[RZ] = value;
-		spnav_cfg_set_deadzone(RZ, value);
-	}
-}
-
-G_MODULE_EXPORT void bn_handler(GtkButton *bn, gpointer data)
-{
-	GtkWidget *dlg;
-	int tmp;
-	const gchar* ctrlname = gtk_buildable_get_name(GTK_BUILDABLE(bn));
-
-#if 0
-	if(strcmp(ctrlname, BTN_PING) == 0) {
-		if(tmp) {	/* daemon alive */
-			dlg = gtk_message_dialog_new(GTK_WINDOW(widgets.win), GTK_DIALOG_DESTROY_WITH_PARENT,
-				GTK_MESSAGE_INFO, GTK_BUTTONS_CLOSE, "The spacenavd driver is running fine.");
-			gtk_widget_show_all(dlg);
-			g_signal_connect_swapped(dlg, "response", G_CALLBACK(gtk_widget_destroy), dlg);
-		} else {	/* daemon dead */
-			dlg = gtk_message_dialog_new(GTK_WINDOW(widgets.win), GTK_DIALOG_DESTROY_WITH_PARENT,
-				GTK_MESSAGE_ERROR, GTK_BUTTONS_CLOSE, "The driver isn't running at the moment.\n"
-				"You can still modify the configuration through this panel though.");
-			gtk_widget_show_all(dlg);
-			g_signal_connect_swapped(dlg, "response", G_CALLBACK(gtk_widget_destroy), dlg);
+	nk_foreach(cmd, &nk) {
+		switch(cmd->type) {
+		case NK_COMMAND_SCISSOR:
+			nkgfx_clip((struct nk_command_scissor*)cmd);
+			break;
+		case NK_COMMAND_LINE:
+			nkgfx_line((struct nk_command_line*)cmd);
+			break;
+		case NK_COMMAND_CURVE:
+			nkgfx_curve((struct nk_command_curve*)cmd);
+			break;
+		case NK_COMMAND_RECT:
+			nkgfx_rect((struct nk_command_rect*)cmd);
+			break;
+		case NK_COMMAND_RECT_FILLED:
+			nkgfx_fillrect((struct nk_command_rect_filled*)cmd);
+			break;
+		case NK_COMMAND_RECT_MULTI_COLOR:
+			nkgfx_colrect((struct nk_command_rect_multi_color*)cmd);
+			break;
+		case NK_COMMAND_CIRCLE:
+			nkgfx_circle((struct nk_command_circle*)cmd);
+			break;
+		case NK_COMMAND_CIRCLE_FILLED:
+			nkgfx_fillcircle((struct nk_command_circle_filled*)cmd);
+			break;
+		case NK_COMMAND_ARC:
+			nkgfx_arc((struct nk_command_arc*)cmd);
+			break;
+		case NK_COMMAND_ARC_FILLED:
+			nkgfx_fillarc((struct nk_command_arc_filled*)cmd);
+			break;
+		case NK_COMMAND_TRIANGLE:
+			nkgfx_tri((struct nk_command_triangle*)cmd);
+			break;
+		case NK_COMMAND_TRIANGLE_FILLED:
+			nkgfx_filltri((struct nk_command_triangle_filled*)cmd);
+			break;
+		case NK_COMMAND_POLYGON:
+			nkgfx_poly((struct nk_command_polygon*)cmd);
+			break;
+		case NK_COMMAND_POLYGON_FILLED:
+			nkgfx_fillpoly((struct nk_command_polygon_filled*)cmd);
+			break;
+		case NK_COMMAND_POLYLINE:
+			nkgfx_polyline((struct nk_command_polyline*)cmd);
+			break;
+		case NK_COMMAND_TEXT:
+			nkgfx_text((struct nk_command_text*)cmd);
+			break;
+		case NK_COMMAND_IMAGE:
+			nkgfx_image((struct nk_command_image*)cmd);
+			break;
+		default:
+			break;
 		}
 	}
-#endif
+	glPopAttrib();
+}
+
+static float text_width(nk_handle nk, float h, const char *str, int len)
+{
+	int i, res = 0;
+	for(i=0; i<len; i++) {
+		res += glutStrokeWidth(GLUT_STROKE_ROMAN, *str++);
+	}
+	return PX_TO_VX(res);
+}
+
+static void reshape(int x, int y)
+{
+	float aspect = (float)x / (float)y;
+	win_width = x;
+	win_height = y;
+
+	virt_width = aspect * VIRT_HEIGHT;
+
+	glViewport(0, 0, x, y);
+
+	glMatrixMode(GL_PROJECTION);
+	glLoadIdentity();
+	glOrtho(0, virt_width, 0, VIRT_HEIGHT, -1, 1);
+}
+
+static void handle_key(int key, int press)
+{
+	switch(key) {
+	case 'c':
+		if(modkeys & GLUT_ACTIVE_CTRL) {
+			nk_input_key(&nk, NK_KEY_COPY, press);
+		}
+		break;
+	case 'v':
+		if(modkeys & GLUT_ACTIVE_CTRL) {
+			nk_input_key(&nk, NK_KEY_PASTE, press);
+		}
+		break;
+	case 'x':
+		if(modkeys & GLUT_ACTIVE_CTRL) {
+			nk_input_key(&nk, NK_KEY_TEXT_START, press);
+			nk_input_key(&nk, NK_KEY_SCROLL_START, press);
+		}
+		break;
+	case 'z':
+		if(modkeys & GLUT_ACTIVE_CTRL) {
+			nk_input_key(&nk, NK_KEY_TEXT_UNDO, press);
+		}
+		break;
+	case 'r':
+		if(modkeys & GLUT_ACTIVE_CTRL) {
+			nk_input_key(&nk, NK_KEY_TEXT_REDO, press);
+		}
+		break;
+	case 127:
+		nk_input_key(&nk, NK_KEY_DEL, press);
+		break;
+	case '\b':
+		nk_input_key(&nk, NK_KEY_BACKSPACE, press);
+		break;
+	case '\n':
+	case '\r':
+		nk_input_key(&nk, NK_KEY_ENTER, press);
+		break;
+	default:
+		if(isalpha(key)) {
+			if(modkeys & GLUT_ACTIVE_SHIFT) {
+				nk_input_key(&nk, toupper(key), press);
+			} else {
+				nk_input_key(&nk, key, press);
+			}
+		}
+		break;
+	}
+}
+
+static void handle_skey(int key, int press)
+{
+	switch(key) {
+	case GLUT_KEY_LEFT:
+		nk_input_key(&nk, NK_KEY_LEFT, press);
+		break;
+	case GLUT_KEY_UP:
+		nk_input_key(&nk, NK_KEY_UP, press);
+		break;
+	case GLUT_KEY_RIGHT:
+		nk_input_key(&nk, NK_KEY_RIGHT, press);
+		break;
+	case GLUT_KEY_DOWN:
+		nk_input_key(&nk, NK_KEY_DOWN, press);
+		break;
+	case GLUT_KEY_PAGE_UP:
+		nk_input_key(&nk, NK_KEY_SCROLL_UP, press);
+		break;
+	case GLUT_KEY_PAGE_DOWN:
+		nk_input_key(&nk, NK_KEY_SCROLL_DOWN, press);
+		break;
+	case GLUT_KEY_HOME:
+		nk_input_key(&nk, NK_KEY_SCROLL_START, press);
+		break;
+	case GLUT_KEY_END:
+		nk_input_key(&nk, NK_KEY_SCROLL_END, press);
+		break;
+	default:
+		break;
+	}
+}
+
+static void keypress(unsigned char key, int x, int y)
+{
+	if(key == 27) exit(0);
+
+	modkeys = glutGetModifiers();
+	handle_key(key, 1);
+}
+
+static void keyrelease(unsigned char key, int x, int y)
+{
+	modkeys = glutGetModifiers();
+	handle_key(key, 0);
+}
+
+static void skeypress(int key, int x, int y)
+{
+	modkeys = glutGetModifiers();
+	handle_skey(key, 1);
+}
+
+static void skeyrelease(int key, int x, int y)
+{
+	modkeys = glutGetModifiers();
+	handle_skey(key, 0);
+}
+
+static void mouse(int bn, int st, int x, int y)
+{
+	long tm;
+	static long last_click;
+	int press = st == GLUT_DOWN;
+	int bidx = bn - GLUT_LEFT_BUTTON;
+	x = PX_TO_VX(x);
+	y = PY_TO_VY(y);
+
+	if(bn == GLUT_LEFT_BUTTON) {
+		if(press) {
+			tm = glutGet(GLUT_ELAPSED_TIME);
+			if(tm - last_click > 20 && tm - last_click < 200) {
+				nk_input_button(&nk, NK_BUTTON_DOUBLE, x, y, 1);
+			}
+			last_click = tm;
+		} else {
+			nk_input_button(&nk, NK_BUTTON_DOUBLE, x, y, 0);
+		}
+	}
+
+	nk_input_button(&nk, bidx, x, y, press);
+}
+
+static void motion(int x, int y)
+{
+	nk_input_motion(&nk, PX_TO_VX(x), PY_TO_VY(y));
+}
+
+static void errorbox(const char *msg)
+{
+	fprintf(stderr, "error: %s\n", msg);
 }

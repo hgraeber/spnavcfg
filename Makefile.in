@@ -6,27 +6,17 @@ bin = spnavcfg
 warn = -pedantic -Wall
 
 CC ?= gcc
-SED = sed
-CFLAGS = $(warn) $(dbg) $(opt) `pkg-config --cflags gtk+-2.0 gmodule-export-2.0` \
-		 $(add_cflags) -MMD
-LDFLAGS = `pkg-config --libs gtk+-2.0 gmodule-export-2.0` -lX11 -lspnav $(add_ldflags)
+CFLAGS = $(warn) $(dbg) $(opt) $(add_cflags) -MMD
+LDFLAGS = -lGL -lglut -lspnav -lm $(add_ldflags)
 
 $(bin): $(obj)
 	$(CC) -o $@ $(obj) $(LDFLAGS)
 
 -include $(dep)
 
-src/main.o: src/main.c src/ui.h
-	$(CC) $(CFLAGS) -c $< -o $@
-
-src/ui.h: ui/ui.xml
-	echo 'static const char *ui_xml =' >$@
-	$(SED) 's/"/\\"/g; s/^.*$$/	"&\\n"/' $< >>$@
-	echo ';' >>$@
-
 .PHONY: clean
 clean:
-	rm -f $(obj) $(bin) src/ui.h
+	rm -f $(obj) $(bin)
 
 .PHONY: cleandep
 cleandep:

@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include <GL/glut.h>
 #include "ui.h"
 #include "cgmath/cgmath.h"
@@ -28,6 +29,11 @@ static void draw_rect(float x, float y, float w, float h)
 
 void nkgfx_clip(struct nk_command_scissor *cmd)
 {
+	cmd->x = VX_TO_PX(cmd->x);
+	cmd->y = VY_TO_PY(cmd->y);
+	cmd->w = VX_TO_PX(cmd->w);
+	cmd->h = VY_TO_PY(cmd->h);
+	cmd->y = win_height - cmd->y - cmd->h;
 	glScissor(cmd->x, cmd->y, cmd->w, cmd->h);
 }
 
@@ -163,7 +169,7 @@ void nkgfx_circle(struct nk_command_circle *cmd)
 
 	glMatrixMode(GL_MODELVIEW);
 	glPushMatrix();
-	glTranslatef(cmd->x, cmd->y, 0);
+	glTranslatef(cmd->x + cmd->w / 2.0f, cmd->y + cmd->h / 2.0f, 0);
 	glScalef(cmd->w / 2.0f, cmd->h / 2.0f, 1);
 
 	glBegin(GL_LINE_LOOP);
@@ -178,7 +184,7 @@ void nkgfx_fillcircle(struct nk_command_circle_filled *cmd)
 {
 	glMatrixMode(GL_MODELVIEW);
 	glPushMatrix();
-	glTranslatef(cmd->x, cmd->y, 0);
+	glTranslatef(cmd->x + cmd->w / 2.0f, cmd->y + cmd->h / 2.0f, 0);
 	glScalef(cmd->w / 2.0f, cmd->h / 2.0f, 1);
 
 	glBegin(GL_TRIANGLE_FAN);
@@ -273,15 +279,22 @@ void nkgfx_text(struct nk_command_text *cmd)
 	int i;
 	char *ptr = cmd->string;
 
+	glPushAttrib(GL_ENABLE_BIT | GL_LINE_BIT);
+	glEnable(GL_LINE_SMOOTH);
+	glLineWidth(1);
+
 	glMatrixMode(GL_MODELVIEW);
 	glPushMatrix();
-	glTranslatef(cmd->x, cmd->y, 0);
+	glTranslatef(cmd->x, cmd->y + 16, 0);
+	glScalef(0.14, -0.14, 0.14);
 
+	setcolor(cmd->foreground);
 	for(i=0; i<cmd->length; i++) {
-		glutStrokeWidth(GLUT_STROKE_ROMAN, *ptr++);
+		glutStrokeCharacter(GLUT_STROKE_ROMAN, *ptr++);
 	}
 
 	glPopMatrix();
+	glPopAttrib();
 }
 
 void nkgfx_image(struct nk_command_image *cmd)

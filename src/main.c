@@ -25,12 +25,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <spnav.h>
 #include "ui.h"
 
-#define VIRT_HEIGHT	600
-static int virt_width;
-
-#define PX_TO_VX(x)		((x) * virt_width / win_width)
-#define PY_TO_VY(y)		((y) * VIRT_HEIGHT / win_height)
-
 static int init(void);
 static void cleanup(void);
 static void display(void);
@@ -46,7 +40,6 @@ static void motion(int x, int y);
 
 static void errorbox(const char *msg);
 
-static int win_width, win_height;
 static unsigned int modkeys;
 static struct nk_context nk;
 static struct nk_user_font font;
@@ -96,8 +89,6 @@ int init(void)
 {
 	int i;
 
-	glEnable(GL_CULL_FACE);
-
 	font.height = 16;
 	font.width = text_width;
 
@@ -139,6 +130,7 @@ int init(void)
 static void cleanup(void)
 {
 	spnav_close();
+	nk_free(&nk);
 }
 
 static void display(void)
@@ -149,16 +141,17 @@ static void display(void)
 
 	glClear(GL_COLOR_BUFFER_BIT);
 
-	nk_begin(&nk, "foo", nk_rect(20, 20, 200, 200), NK_WINDOW_BORDER);
+	nk_begin(&nk, "foo", nk_rect(200, 80, 200, 200), NK_WINDOW_BORDER | NK_WINDOW_TITLE | NK_WINDOW_MOVABLE);
 	nk_layout_row_dynamic(&nk, 30, 2);
 	if(nk_button_label(&nk, "red")) glClearColor(1, 0, 0, 1);
 	if(nk_button_label(&nk, "black")) glClearColor(0, 0, 0, 1);
 	nk_layout_row_dynamic(&nk, 30, 2);
-	if(nk_option_label(&nk, "foo1", foo1)) foo1 = 1;
-	if(nk_option_label(&nk, "foo2", foo2)) foo2 = 1;
+	foo1 = nk_option_label(&nk, "foo1", foo1);
+	foo2 = nk_option_label(&nk, "foo2", foo2);
 	nk_end(&nk);
 
 	draw_nk();
+	nk_clear(&nk);
 
 	glutSwapBuffers();
 	assert(glGetError() == GL_NO_ERROR);
@@ -241,7 +234,7 @@ static float text_width(nk_handle nk, float h, const char *str, int len)
 	for(i=0; i<len; i++) {
 		res += glutStrokeWidth(GLUT_STROKE_ROMAN, *str++);
 	}
-	return PX_TO_VX(res);
+	return PX_TO_VX(res) * 0.14;
 }
 
 static void reshape(int x, int y)
@@ -256,7 +249,7 @@ static void reshape(int x, int y)
 
 	glMatrixMode(GL_PROJECTION);
 	glLoadIdentity();
-	glOrtho(0, virt_width, 0, VIRT_HEIGHT, -1, 1);
+	glOrtho(0, virt_width, VIRT_HEIGHT, 0, -1, 1);
 }
 
 static void handle_key(int key, int press)
@@ -308,6 +301,8 @@ static void handle_key(int key, int press)
 		}
 		break;
 	}
+
+	glutPostRedisplay();
 }
 
 static void handle_skey(int key, int press)
@@ -338,8 +333,10 @@ static void handle_skey(int key, int press)
 		nk_input_key(&nk, NK_KEY_SCROLL_END, press);
 		break;
 	default:
-		break;
+		return;
 	}
+
+	glutPostRedisplay();
 }
 
 static void keypress(unsigned char key, int x, int y)
@@ -390,11 +387,13 @@ static void mouse(int bn, int st, int x, int y)
 	}
 
 	nk_input_button(&nk, bidx, x, y, press);
+	glutPostRedisplay();
 }
 
 static void motion(int x, int y)
 {
 	nk_input_motion(&nk, PX_TO_VX(x), PY_TO_VY(y));
+	glutPostRedisplay();
 }
 
 static void errorbox(const char *msg)

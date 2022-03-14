@@ -6,7 +6,7 @@ bin = spnavcfg
 warn = -pedantic -Wall
 
 CC ?= gcc
-CFLAGS = $(warn) $(dbg) $(opt) $(add_cflags) -MMD
+CFLAGS = $(warn) $(dbg) $(opt) -fcommon $(add_cflags) -MMD
 LDFLAGS = -lGL -lglut -lspnav -lm $(add_ldflags)
 
 $(bin): $(obj)

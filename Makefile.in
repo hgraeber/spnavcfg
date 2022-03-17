@@ -7,16 +7,18 @@ warn = -pedantic -Wall
 
 CC ?= gcc
 CFLAGS = $(warn) $(dbg) $(opt) -fcommon $(add_cflags) -MMD
-LDFLAGS = -lGL -lglut -lspnav -lm $(add_ldflags)
+LDFLAGS = -no-pie -lGL -lglut -lspnav -limago -lm $(add_ldflags)
 
-$(bin): $(obj)
-	$(CC) -o $@ $(obj) $(LDFLAGS)
+$(bin): $(obj) src/data.o
+	$(CC) -o $@ $^ $(LDFLAGS)
 
 -include $(dep)
 
+src/data.o: src/data.s icons/devices.png
+
 .PHONY: clean
 clean:
-	rm -f $(obj) $(bin)
+	rm -f $(obj) $(bin) src/data.o
 
 .PHONY: cleandep
 cleandep:

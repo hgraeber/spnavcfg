@@ -19,17 +19,16 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <ctype.h>
 #include <assert.h>
 #include <GL/glut.h>
 #include <spnav.h>
+#include <imago2.h>
+#include "spnavcfg.h"
 #include "ui.h"
 
 static int init(void);
 static void cleanup(void);
 static void display(void);
-static void draw_nk(void);
-static float text_width(nk_handle nk, float h, const char *str, int len);
 static void reshape(int x, int y);
 static void keypress(unsigned char key, int x, int y);
 static void keyrelease(unsigned char key, int x, int y);
@@ -39,23 +38,40 @@ static void mouse(int bn, int st, int x, int y);
 static void motion(int x, int y);
 
 static void errorbox(const char *msg);
+static size_t imgread(void *buf, size_t bytes, void *uptr);
+static long imgseek(long offs, int whence, void *uptr);
 
 static unsigned int modkeys;
-static struct nk_context nk;
-static struct nk_user_font font;
 
 static int fd;
 
-#define MAX_BUTTONS		64
-
-static float sensitivity;
-static float sens_axis[6];
-static int invert;
-static int map_axis[6];
-static int map_bn[MAX_BUTTONS];
-static int dead_thres[6];
-static int led, grab;
-/*static int repeat_msec;*/
+static struct device_image devimglist[] = {
+	{SPNAV_DEV_UNKNOWN,		0, 256, 256, 0, 0},
+	{SPNAV_DEV_SB2003,		0, 256, 256, 1, 0},
+	{SPNAV_DEV_SB3003,		0, 256, 256, 2, 0},
+	{SPNAV_DEV_SB4000,		0, 256, 256, 3, 0},
+	{SPNAV_DEV_SM,			0, 256, 256, 5, 0},
+	{SPNAV_DEV_SM5000,		0, 256, 256, 2, 0},
+	{SPNAV_DEV_SMCADMAN,	0, 256, 256, 6, 0},
+	{SPNAV_DEV_PLUSXT,		0, 256, 256, 5, 0},
+	{SPNAV_DEV_CADMAN,		0, 256, 256, 6, 0},
+	{SPNAV_DEV_SMCLASSIC,	0, 256, 256, 4, 0},
+	{SPNAV_DEV_SB5000,		0, 256, 256, 3, 0},
+	{SPNAV_DEV_STRAVEL,		0, 256, 256, 2, 1},
+	{SPNAV_DEV_SPILOT,		0, 256, 256, 3, 1},
+	{SPNAV_DEV_SNAV,		0, 256, 256, 0, 1},
+	{SPNAV_DEV_SEXP,		0, 256, 256, 4, 1},
+	{SPNAV_DEV_SNAVNB,		0, 256, 256, 1, 1},
+	{SPNAV_DEV_SPILOTPRO,	0, 256, 256, 5, 1},
+	{SPNAV_DEV_SMPRO,		0, 256, 256, 6, 1},
+	{SPNAV_DEV_NULOOQ,		0, 256, 256, 7, 0},
+	{SPNAV_DEV_SMW,			0, 256, 256, 1, 2},
+	{SPNAV_DEV_SMPROW,		0, 256, 256, 6, 1},
+	{SPNAV_DEV_SMENT,		0, 256, 256, 7, 1},
+	{SPNAV_DEV_SMCOMP,		0, 256, 256, 0, 2},
+	{SPNAV_DEV_SMMOD,		0, 256, 256, 0, 0},
+	{-1}
+};
 
 
 int main(int argc, char **argv)
@@ -80,7 +96,6 @@ int main(int argc, char **argv)
 	}
 	atexit(cleanup);
 
-	nk_input_begin(&nk);
 	glutMainLoop();
 	return 0;
 }
@@ -88,12 +103,8 @@ int main(int argc, char **argv)
 int init(void)
 {
 	int i;
-
-	font.height = 16;
-	font.width = text_width;
-
-	nk_init_default(&nk, &font);
-	nk_style_set_font(&nk, &font);
+	struct img_pixmap img;
+	struct img_io io = {0, imgread, 0, imgseek};
 
 	if((fd = spnav_open()) == -1) {
 		errorbox("Failed to connect to spacenavd!");
@@ -106,10 +117,11 @@ int init(void)
 	}
 	spnav_client_name("spnavcfg");
 
-	printf("Device: %s\n", spnav_dev_name(0, 0));
-	printf("Path: %s\n", spnav_dev_path(0, 0));
-	printf("Buttons: %d\n", spnav_dev_buttons());
-	printf("Axes: %d\n", spnav_dev_axes());
+	devinf.name = strdup(spnav_dev_name(0, 0));
+	devinf.path = strdup(spnav_dev_path(0, 0));
+	devinf.type = spnav_dev_type();
+	devinf.nbuttons = spnav_dev_buttons();
+	devinf.naxes = spnav_dev_axes();
 
 	sensitivity = spnav_cfg_get_sens();
 	spnav_cfg_get_axis_sens(sens_axis);
@@ -124,279 +136,131 @@ int init(void)
 	for(i=0; i<MAX_BUTTONS; i++) {
 		map_bn[i] = spnav_cfg_get_bnmap(i);
 	}
+
+	img_init(&img);
+	if(img_read(&img, &io) != -1) {
+		int i, ncol, nrow;
+		devimg = devimglist[0];
+		for(i=0; devimglist[i].devtype != -1; i++) {
+			if(devimglist[i].devtype == devinf.type) {
+				devimg = devimglist[i];
+				break;
+			}
+		}
+		devimg.tex = img_gltexture(&img);
+		ncol = img.width / devimg.width;
+		nrow = img.height / devimg.height;
+		devimg.xoffs = devimg.xoffs * img.width / ncol;
+		devimg.yoffs = devimg.yoffs * img.height / nrow;
+		img_destroy(&img);
+	} else {
+		fprintf(stderr, "failed to decode device images\n");
+	}
+
+	if(init_ui() == -1) {
+		fprintf(stderr, "failed to initialize user interface\n");
+		return -1;
+	}
+
 	return 0;
 }
 
 static void cleanup(void)
 {
 	spnav_close();
-	nk_free(&nk);
+	cleanup_ui();
 }
 
 static void display(void)
 {
-	static int foo1, foo2;
-
-	nk_input_end(&nk);
-
 	glClear(GL_COLOR_BUFFER_BIT);
 
-	nk_begin(&nk, "foo", nk_rect(200, 80, 200, 200), NK_WINDOW_BORDER | NK_WINDOW_TITLE | NK_WINDOW_MOVABLE);
-	nk_layout_row_dynamic(&nk, 30, 2);
-	if(nk_button_label(&nk, "red")) glClearColor(1, 0, 0, 1);
-	if(nk_button_label(&nk, "black")) glClearColor(0, 0, 0, 1);
-	nk_layout_row_dynamic(&nk, 30, 2);
-	foo1 = nk_option_label(&nk, "foo1", foo1);
-	foo2 = nk_option_label(&nk, "foo2", foo2);
-	nk_end(&nk);
-
-	draw_nk();
-	nk_clear(&nk);
+	draw_ui();
 
 	glutSwapBuffers();
 	assert(glGetError() == GL_NO_ERROR);
-
-	nk_input_begin(&nk);
-}
-
-static void draw_nk(void)
-{
-	const struct nk_command *cmd = 0;
-
-	glPushAttrib(GL_ENABLE_BIT | GL_LINE_BIT);
-	glEnable(GL_SCISSOR_TEST);
-	glEnable(GL_BLEND);
-	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-
-	nk_foreach(cmd, &nk) {
-		switch(cmd->type) {
-		case NK_COMMAND_SCISSOR:
-			nkgfx_clip((struct nk_command_scissor*)cmd);
-			break;
-		case NK_COMMAND_LINE:
-			nkgfx_line((struct nk_command_line*)cmd);
-			break;
-		case NK_COMMAND_CURVE:
-			nkgfx_curve((struct nk_command_curve*)cmd);
-			break;
-		case NK_COMMAND_RECT:
-			nkgfx_rect((struct nk_command_rect*)cmd);
-			break;
-		case NK_COMMAND_RECT_FILLED:
-			nkgfx_fillrect((struct nk_command_rect_filled*)cmd);
-			break;
-		case NK_COMMAND_RECT_MULTI_COLOR:
-			nkgfx_colrect((struct nk_command_rect_multi_color*)cmd);
-			break;
-		case NK_COMMAND_CIRCLE:
-			nkgfx_circle((struct nk_command_circle*)cmd);
-			break;
-		case NK_COMMAND_CIRCLE_FILLED:
-			nkgfx_fillcircle((struct nk_command_circle_filled*)cmd);
-			break;
-		case NK_COMMAND_ARC:
-			nkgfx_arc((struct nk_command_arc*)cmd);
-			break;
-		case NK_COMMAND_ARC_FILLED:
-			nkgfx_fillarc((struct nk_command_arc_filled*)cmd);
-			break;
-		case NK_COMMAND_TRIANGLE:
-			nkgfx_tri((struct nk_command_triangle*)cmd);
-			break;
-		case NK_COMMAND_TRIANGLE_FILLED:
-			nkgfx_filltri((struct nk_command_triangle_filled*)cmd);
-			break;
-		case NK_COMMAND_POLYGON:
-			nkgfx_poly((struct nk_command_polygon*)cmd);
-			break;
-		case NK_COMMAND_POLYGON_FILLED:
-			nkgfx_fillpoly((struct nk_command_polygon_filled*)cmd);
-			break;
-		case NK_COMMAND_POLYLINE:
-			nkgfx_polyline((struct nk_command_polyline*)cmd);
-			break;
-		case NK_COMMAND_TEXT:
-			nkgfx_text((struct nk_command_text*)cmd);
-			break;
-		case NK_COMMAND_IMAGE:
-			nkgfx_image((struct nk_command_image*)cmd);
-			break;
-		default:
-			break;
-		}
-	}
-	glPopAttrib();
-}
-
-static float text_width(nk_handle nk, float h, const char *str, int len)
-{
-	int i, res = 0;
-	for(i=0; i<len; i++) {
-		res += glutStrokeWidth(GLUT_STROKE_ROMAN, *str++);
-	}
-	return PX_TO_VX(res) * 0.14;
 }
 
 static void reshape(int x, int y)
 {
-	float aspect = (float)x / (float)y;
-	win_width = x;
-	win_height = y;
-
-	virt_width = aspect * VIRT_HEIGHT;
-
 	glViewport(0, 0, x, y);
-
-	glMatrixMode(GL_PROJECTION);
-	glLoadIdentity();
-	glOrtho(0, virt_width, VIRT_HEIGHT, 0, -1, 1);
+	reshape_ui(x, y);
 }
 
-static void handle_key(int key, int press)
-{
-	switch(key) {
-	case 'c':
-		if(modkeys & GLUT_ACTIVE_CTRL) {
-			nk_input_key(&nk, NK_KEY_COPY, press);
-		}
-		break;
-	case 'v':
-		if(modkeys & GLUT_ACTIVE_CTRL) {
-			nk_input_key(&nk, NK_KEY_PASTE, press);
-		}
-		break;
-	case 'x':
-		if(modkeys & GLUT_ACTIVE_CTRL) {
-			nk_input_key(&nk, NK_KEY_TEXT_START, press);
-			nk_input_key(&nk, NK_KEY_SCROLL_START, press);
-		}
-		break;
-	case 'z':
-		if(modkeys & GLUT_ACTIVE_CTRL) {
-			nk_input_key(&nk, NK_KEY_TEXT_UNDO, press);
-		}
-		break;
-	case 'r':
-		if(modkeys & GLUT_ACTIVE_CTRL) {
-			nk_input_key(&nk, NK_KEY_TEXT_REDO, press);
-		}
-		break;
-	case 127:
-		nk_input_key(&nk, NK_KEY_DEL, press);
-		break;
-	case '\b':
-		nk_input_key(&nk, NK_KEY_BACKSPACE, press);
-		break;
-	case '\n':
-	case '\r':
-		nk_input_key(&nk, NK_KEY_ENTER, press);
-		break;
-	default:
-		if(isalpha(key)) {
-			if(modkeys & GLUT_ACTIVE_SHIFT) {
-				nk_input_key(&nk, toupper(key), press);
-			} else {
-				nk_input_key(&nk, key, press);
-			}
-		}
-		break;
-	}
-
-	glutPostRedisplay();
-}
-
-static void handle_skey(int key, int press)
-{
-	switch(key) {
-	case GLUT_KEY_LEFT:
-		nk_input_key(&nk, NK_KEY_LEFT, press);
-		break;
-	case GLUT_KEY_UP:
-		nk_input_key(&nk, NK_KEY_UP, press);
-		break;
-	case GLUT_KEY_RIGHT:
-		nk_input_key(&nk, NK_KEY_RIGHT, press);
-		break;
-	case GLUT_KEY_DOWN:
-		nk_input_key(&nk, NK_KEY_DOWN, press);
-		break;
-	case GLUT_KEY_PAGE_UP:
-		nk_input_key(&nk, NK_KEY_SCROLL_UP, press);
-		break;
-	case GLUT_KEY_PAGE_DOWN:
-		nk_input_key(&nk, NK_KEY_SCROLL_DOWN, press);
-		break;
-	case GLUT_KEY_HOME:
-		nk_input_key(&nk, NK_KEY_SCROLL_START, press);
-		break;
-	case GLUT_KEY_END:
-		nk_input_key(&nk, NK_KEY_SCROLL_END, press);
-		break;
-	default:
-		return;
-	}
-
-	glutPostRedisplay();
-}
 
 static void keypress(unsigned char key, int x, int y)
 {
 	if(key == 27) exit(0);
 
 	modkeys = glutGetModifiers();
-	handle_key(key, 1);
+	ui_input_key(key, 1, modkeys);
 }
 
 static void keyrelease(unsigned char key, int x, int y)
 {
 	modkeys = glutGetModifiers();
-	handle_key(key, 0);
+	ui_input_key(key, 0, modkeys);
 }
 
 static void skeypress(int key, int x, int y)
 {
 	modkeys = glutGetModifiers();
-	handle_skey(key, 1);
+	ui_input_special(key, 1, modkeys);
 }
 
 static void skeyrelease(int key, int x, int y)
 {
 	modkeys = glutGetModifiers();
-	handle_skey(key, 0);
+	ui_input_special(key, 0, modkeys);
 }
 
 static void mouse(int bn, int st, int x, int y)
 {
-	long tm;
-	static long last_click;
 	int press = st == GLUT_DOWN;
 	int bidx = bn - GLUT_LEFT_BUTTON;
-	x = PX_TO_VX(x);
-	y = PY_TO_VY(y);
 
-	if(bn == GLUT_LEFT_BUTTON) {
-		if(press) {
-			tm = glutGet(GLUT_ELAPSED_TIME);
-			if(tm - last_click > 20 && tm - last_click < 200) {
-				nk_input_button(&nk, NK_BUTTON_DOUBLE, x, y, 1);
-			}
-			last_click = tm;
-		} else {
-			nk_input_button(&nk, NK_BUTTON_DOUBLE, x, y, 0);
-		}
-	}
-
-	nk_input_button(&nk, bidx, x, y, press);
-	glutPostRedisplay();
+	ui_input_mbutton(bidx, press, x, y);
 }
 
 static void motion(int x, int y)
 {
-	nk_input_motion(&nk, PX_TO_VX(x), PY_TO_VY(y));
-	glutPostRedisplay();
+	ui_input_mmotion(x, y);
 }
 
 static void errorbox(const char *msg)
 {
 	fprintf(stderr, "error: %s\n", msg);
+
+}
+
+extern char devices_png[];
+extern int devices_png_size;
+static int cur_offs;
+
+static size_t imgread(void *buf, size_t bytes, void *uptr)
+{
+	long sz, rem = devices_png_size - cur_offs;
+
+	if((sz = bytes < rem ? bytes : rem) <= 0) return 0;
+
+	memcpy(buf, devices_png + cur_offs, sz);
+	cur_offs += sz;
+	return sz;
+}
+
+static long imgseek(long offs, int whence, void *uptr)
+{
+	switch(whence) {
+	case SEEK_SET:
+		cur_offs = offs;
+		break;
+	case SEEK_END:
+		cur_offs = devices_png_size - offs;
+		break;
+	case SEEK_CUR:
+		cur_offs += offs;
+	default:
+		break;
+	}
+	return cur_offs;
 }

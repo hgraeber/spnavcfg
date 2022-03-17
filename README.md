@@ -7,6 +7,8 @@ Spacenav daemon interactive configuration program.
 
 ![shot](http://spacenav.sourceforge.net/images/spnavcfg-shot-thumb.png)
 
+SECURITY NOTICE: spnavcfg, from version 0.4 and onwards, no longer needs to be
+installed setuid-root. Read the "Compatibility" section below for details.
 
 Compatibility
 -------------
@@ -29,9 +31,22 @@ which will work with older versions of the daemon is 0.3.1.
 
 Installation
 ------------
-Requires libspnav, GTK+ 2, and Xlib headers to be installed.
-`./configure`, `make`, `make install`, as usual (the `make install` part as root
-if you're installing system-wide). See `./configure --help` for build options.
+First make sure to install all dependencies:
+  - OpenGL
+  - freeglut: http://freeglut.sourceforge.net
+  - libspnav v0.4 or later: https://github.com/FreeSpacenav/libspnav
+  - libimago v2 or later: https://github.com/jtsiomb/libimago
+
+Your system's package manager will probably have most of these dependencies
+available, so look there first if you don't feel like building everything from
+source. For debian derived systems make sure to install the corresponding `-dev`
+packages.
+
+To build just type `./configure`, `make`, and `make install` as usual.
+The `make install` part will probably need to be executed as root, if you're
+installing system-wide.
+
+For build options, see `./configure --help`.
 
 License
 -------

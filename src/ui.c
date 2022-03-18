@@ -60,6 +60,14 @@ void draw_ui(void)
 	nk_image(&nk, nkdevimg);
 	nk_end(&nk);
 
+	nk_begin(&nk, "Axes", nk_rect(0, 200, 600, 200), NK_WINDOW_BORDER | NK_WINDOW_TITLE);
+	nk_layout_row_dynamic(&nk, 0, 3);
+	nk_label(&nk, "Sensitivity", NK_TEXT_RIGHT);
+	sensitivity = nk_slide_float(&nk, 0, sensitivity, 6, 0.1);
+	if((swap_yz = nk_check_label(&nk, "Swap Y-Z Axis", swap_yz))) {
+	}
+	nk_end(&nk);
+
 	/*
 	nk_begin(&nk, "foo", nk_rect(200, 80, 200, 200), NK_WINDOW_BORDER | NK_WINDOW_TITLE | NK_WINDOW_MOVABLE);
 	nk_layout_row_dynamic(&nk, 30, 2);

@@ -29,6 +29,7 @@ int map_axis[6];
 int map_bn[MAX_BUTTONS];
 int dead_thres[6];
 int led, grab;
+int swap_yz;
 /*int repeat_msec;*/
 
 #endif	/* SPNAVCFG_H_ */
